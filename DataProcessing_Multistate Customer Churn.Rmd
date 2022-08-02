@@ -1,0 +1,257 @@
+---
+title: "LGPIF Data Prepare"
+author: "Yumo"
+date: "31/07/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prepare Data for Multi-State Modeling of Customer Churn
+
+```{r 1step}
+library(tidyverse)
+library(dplyr)
+data0610<-read.csv(file="LGPIF-LBD-ALL4-2006-10.csv",header=T) # read "LGPIF-LBD-ALL4-2006-10.csv"
+data1114<-read.csv(file="LGPIF-LBD-ALL4-2011-14.csv",header=T) # read "LGPIF-LBD-ALL4-2010-14.csv"
+data0614<-rbind(data0610,data1114)#raw data from 2006 to 2014
+
+#Arrange contracts by PolicyNum and Year
+data0614<-data0614 %>% arrange(PolicyNum,Year) 
+#Select variables that we are interested
+data0614Select<- data0614%>%dplyr::select(PolicyNum,Year,TypeCity,TypeCounty,TypeMisc,TypeSchool,TypeTown,TypeVillage,
+                                    Coverage,CoverageIM,CoveragePN,CoveragePO,CoverageCN,CoverageCO,
+                                    Premium,PremiumIM,PremiumPN,PremiumPO,PremiumCN,PremiumCO,
+                                    Freq,FreqIM,FreqPN,FreqPO,FreqCN,FreqCO,
+                                    yAvg,yAvgIM,yAvgPN,yAvgPO,yAvgCN,yAvgCO,
+                                    Claim,ClaimIM,ClaimPN,ClaimPO,ClaimCN,ClaimCO,
+                                    Deduct,DeductIM,DeductPN,DeductPO,DeductCN,DeductCO)
+
+#Rename BC variables
+colnames(data0614Select)[colnames(data0614Select) == "Coverage"] = "CoverageBC"
+colnames(data0614Select)[colnames(data0614Select) == "Premium"] = "PremiumBC"
+colnames(data0614Select)[colnames(data0614Select) == "yAvg"] = "yAvgBC"
+colnames(data0614Select)[colnames(data0614Select) == "Claim"] = "ClaimBC"
+colnames(data0614Select)[colnames(data0614Select) == "Deduct"] = "DeductBC"
+colnames(data0614Select)[colnames(data0614Select) == "Freq"] = "FreqBC"
+
+# Group four Auto coverages into one class called Car
+data0614Select<-mutate(data0614Select,CoverageCar=0, PremiumCar=0, FreqCar=0,yAvgCar=0,ClaimCar=0,DeductCar=0)#create new variables for Car coverage
+data0614Select$CoverageCar=data0614Select$CoveragePN+ data0614Select$CoveragePO+ data0614Select$CoverageCN+ data0614Select$CoverageCO
+data0614Select$PremiumCar=data0614Select$PremiumPN+ data0614Select$PremiumPO+ data0614Select$PremiumCN+ data0614Select$PremiumCO
+data0614Select$FreqCar=data0614Select$FreqPN+ data0614Select$FreqPO+ data0614Select$FreqCN+ data0614Select$FreqCO
+data0614Select$ClaimCar=data0614Select$ClaimPN+ data0614Select$ClaimPO+ data0614Select$ClaimCN+ data0614Select$ClaimCO
+data0614Select$DeductCar=data0614Select$DeductPN+ data0614Select$DeductPO+ data0614Select$DeductCN+ data0614Select$DeductCO
+data0614Select$yAvgCar=ifelse(data0614Select$ClaimCar==0,0,data0614Select$ClaimCar/data0614Select$FreqCar)#severity
+
+# Remove contracts after year 2014
+data0613<-filter(data0614Select,Year<2015)
+# Create Length variable
+data0613 <- data0613 %>%
+  group_by(PolicyNum) %>%
+  mutate(
+    Length = Year-min(Year, na.rm = T)+1
+  ) #Policy Length
+
+# Remove outliers: we ensure both premium and coverage are simultaneously positive or zero, otherwise the observations will be removed as outliers
+data0613<-filter(data0613, (PremiumBC>0 & CoverageBC>0) | (PremiumBC==0 & CoverageBC==0))
+data0613<-filter(data0613, (PremiumIM>0 & CoverageIM>0) | (PremiumIM==0 & CoverageIM==0))
+data0613<-filter(data0613, (PremiumCar>0 & CoverageCar>0) | (PremiumCar==0 & CoverageCar==0))
+
+# Assume BC is necessary, so we need to remove those contracts do not have BC
+data0613<-filter(data0613, (CoverageBC>0) | (CoverageBC==0 & CoverageIM==0 & CoverageCar==0))
+
+# Define State 1=BC+IM+Car (full-coverage), 2=BC + IM/Car(partial-coverage), 3=Churn
+data0613<-mutate(data0613,statefrom=0,stateto=0)
+#Note: this is the first type of Churn, the second type is defined as no record next year
+data0613$statefrom <- ifelse(data0613$CoverageBC>0 & data0613$CoverageIM>0 & data0613$CoverageCar>0,1,
+                       ifelse(data0613$CoverageBC>0 & data0613$CoverageIM>0 & data0613$CoverageCar==0,2,
+                        ifelse(data0613$CoverageBC>0 & data0613$CoverageIM==0 & data0613$CoverageCar>0,2,
+                         ifelse(data0613$CoverageBC>0 & data0613$CoverageIM==0 & data0613$CoverageCar==0,2,
+                          ifelse(data0613$CoverageBC==0 & data0613$CoverageIM==0 & data0613$CoverageCar==0,3,0)))))
+
+#define "state to", i.e., the next state
+for (i in c(1:(length(data0613$PolicyNum)-1))){
+data0613[i, c("stateto")] = ifelse(data0613[i, c("PolicyNum")] ==data0613[i+1, c("PolicyNum")] & data0613[i, c("Year")] == data0613[i+1, c("Year")]-1, data0613[i+1, c("statefrom")], 
+ifelse(data0613[i, c("PolicyNum")] != data0613[i+1, c("PolicyNum")] & data0613[i, c("Year")] !=2014,3, #leave fund before 2014 (no records)
+ifelse(data0613[i, c("PolicyNum")] == data0613[i+1, c("PolicyNum")] & data0613[i, c("Year")] != data0613[i+1, c("Year")]-1,3, 0))) #leave fund for at least 1 year (gap)
+}
+# factor: state of origin and state of destination
+data0613$stateto<-as.factor(data0613$stateto)
+data0613$statefrom<-as.factor(data0613$statefrom)
+
+```
+
+```{r 2step}
+# Then we remove the contracts in 2013 and 2014 , and we only study 2006 to 2013 in the paper (lots of policyholders churned in 2014 because the LGPIF was closed sooner). Note, we still know the state of a contract in 2013 by looking at ""state to" in 2012.
+data_3states<-filter(data0613,Year<2013) #copy data set
+# Now we are going to create some new variables, and manipulate variables
+
+# Premium change compared to the last premium paid (no need to be two consecutive years). In the paper, this is Ratio_Premium = (Premium_{t} / Premium_{t-1}) -1.
+
+data_3states<-mutate(data_3states,RatioPremium=0)
+
+#RatioPremium
+for (i in c(2:(length(data_3states$RatioPremium)))){
+data_3states[i, c("RatioPremium")] = ifelse(data_3states[i, c("PolicyNum")] == data_3states[i-1, c("PolicyNum")] & (data_3states[i-1, c("PremiumBC")]+data_3states[i-1, c("PremiumIM")]+data_3states[i-1, c("PremiumCar")])!=0 & data_3states[i, c("Year")] == data_3states[i-1, c("Year")]+1, (data_3states[i, c("PremiumBC")]+data_3states[i, c("PremiumIM")]+data_3states[i, c("PremiumCar")])/(data_3states[i-1, c("PremiumBC")]+data_3states[i-1, c("PremiumIM")]+data_3states[i-1, c("PremiumCar")])-1,0)
+}
+
+#Premium divided by $1000
+data_3states$PremiumBC<-data_3states$PremiumBC/1000  #($ 1000) Premium
+data_3states$PremiumIM<-data_3states$PremiumIM/1000  #($ 1000) Premium
+data_3states$PremiumCar<-data_3states$PremiumCar/1000#($ 1000) Premium
+#Create Rates: premium per coverage
+data_3states<-mutate(data_3states,RateBC=0,RateIM=0,RateCar=0)
+data_3states$RateBC<-ifelse(data_3states$CoverageBC>0,data_3states$PremiumBC/data_3states$CoverageBC,0)
+data_3states$RateIM<-ifelse(data_3states$CoverageIM>0,data_3states$PremiumIM/data_3states$CoverageIM,0)
+data_3states$RateCar<-ifelse(data_3states$CoverageCar>0,data_3states$PremiumCar/data_3states$CoverageCar,0)
+ 
+#make Freq be a factor variable: IClaim to denote the occurrence of a claim
+data_3states <- mutate(data_3states,IClaimBC=0,IClaimIM=0,IClaimCar=0)
+
+#BC Frequency: 0, 1+
+data_3states$IClaimBC<-ifelse(data_3states$FreqBC==0,0,1)
+#IM Frequency: 0, 1+
+data_3states$IClaimIM<-ifelse(data_3states$FreqIM==0, 0,1)
+#Car Frequency: 0, 1+
+data_3states$IClaimCar<-ifelse(data_3states$FreqCar==0, 0, 1)
+
+
+
+#Create a factor variable for EntityType
+data_3states <- mutate(data_3states,Entity=0)
+data_3states$Entity<-ifelse(data_3states$TypeCounty==1,"County",
+                                   ifelse(data_3states$TypeMisc==1,"Misc",
+                                             ifelse(data_3states$TypeTown==1,"Town",
+                                              ifelse(data_3states$TypeSchool==1,"School",
+                                                 ifelse(data_3states$TypeVillage==1,"Village", "City")))))
+data_3states$Entity<-as.factor(data_3states$Entity)
+data_3states$Entity<-relevel(data_3states$Entity,ref = "City")
+
+#create some grouped dummy variables for Entity types
+data_3states<-mutate(data_3states, EntitySTV=0,EntityCTV=0,EntityCSTV=0,EntitySV=0,EntityCM=0,EntityCVT=0)
+data_3states$EntitySV<-ifelse(data_3states$TypeSchool==1 | data_3states$TypeVillage==1,1,0)
+
+data_3states$EntityCM<-ifelse(data_3states$TypeCity==1 | data_3states$TypeMisc==1,1,0)
+
+data_3states$EntitySTV<-ifelse(data_3states$TypeSchool==1 | data_3states$TypeTown==1|data_3states$TypeVillage==1,1,0)
+
+data_3states$EntityCTV<-ifelse(data_3states$TypeCity==1 | data_3states$TypeTown==1|data_3states$TypeVillage==1,1,0)
+
+data_3states$EntityCSTV<-ifelse(data_3states$TypeSchool==1 | data_3states$TypeCity==1 | data_3states$TypeTown==1|data_3states$TypeVillage==1,1,0)
+
+data_3states$EntityCVT<-ifelse(data_3states$TypeCity==1 | data_3states$TypeVillage==1| data_3states$TypeTown==1,1,0)
+
+#Rename severity
+colnames(data_3states)[colnames((data_3states)) == "yAvgBC"] = "SeverityBC"
+colnames(data_3states)[colnames((data_3states)) == "yAvgIM"] = "SeverityIM"
+colnames(data_3states)[colnames((data_3states)) == "yAvgCar"] = "SeverityCar"
+#Severity by $1000
+data_3states$SeverityBC<-data_3states$SeverityBC/1000  #($ 1000) 
+data_3states$SeverityIM<-data_3states$SeverityIM/1000  #($ 1000) 
+data_3states$SeverityCar<-data_3states$SeverityCar/1000#($ 1000) 
+# Log Severity 
+data_3states<-mutate(data_3states,lnSeverityBC=0,lnSeverityIM=0,lnSeverityCar=0)
+data_3states$lnSeverityBC<- ifelse(data_3states$SeverityBC==0,0,log(data_3states$SeverityBC*1000))  #(log $) 
+data_3states$lnSeverityIM<- ifelse(data_3states$SeverityIM==0,0,log(data_3states$SeverityIM*1000))
+data_3states$lnSeverityCar<-ifelse(data_3states$SeverityCar==0,0,log(data_3states$SeverityCar*1000))
+
+# Outside exogenous variables
+data_3states<-mutate(data_3states,Tornado=0,GDPpC=0,InflationR=0)
+data_3states$Tornado<-ifelse(data_3states$Year==2006,13,
+                             ifelse(data_3states$Year==2007,18,
+                                    ifelse(data_3states$Year==2008,38,
+                                           ifelse(data_3states$Year==2009,16,
+                                                  ifelse(data_3states$Year==2010,46,
+                                                         ifelse(data_3states$Year==2011,38,
+                                                                ifelse(data_3states$Year==2012,4,
+                                                                       ifelse(data_3states$Year==2013,16,
+                                                                              ifelse(data_3states$Year==2014,22,0)))))))))
+data_3states$GDPpC<-ifelse(data_3states$Year==2006,46214,
+                             ifelse(data_3states$Year==2007,47869,
+                                    ifelse(data_3states$Year==2008,48283,
+                                           ifelse(data_3states$Year==2009,47008,
+                                                  ifelse(data_3states$Year==2010,48403,
+                                                         ifelse(data_3states$Year==2011,49829,
+                                                                ifelse(data_3states$Year==2012,51563,
+                                                                       ifelse(data_3states$Year==2013,53072,
+                                                                              ifelse(data_3states$Year==2014,55025,0)))))))))
+data_3states$InflationR<-ifelse(data_3states$Year==2006,3.2,
+                             ifelse(data_3states$Year==2007,2.9,
+                                    ifelse(data_3states$Year==2008,3.8,
+                                           ifelse(data_3states$Year==2009,-0.4,
+                                                  ifelse(data_3states$Year==2010,1.6,
+                                                         ifelse(data_3states$Year==2011,3.2,
+                                                                ifelse(data_3states$Year==2012,2.1,
+                                                                       ifelse(data_3states$Year==2013,1.5,
+                                                                              ifelse(data_3states$Year==2014,1.6,0)))))))))
+
+# Indicator of 2008 financial crisis
+data_3states<-mutate(data_3states,FinaCris=0)
+data_3states$FinaCris <- ifelse(data_3states$Year==2008,1,0)
+
+#Policy Level Variables
+data_3states<-mutate(data_3states,PolicyFreq=0,PolicyClaim=0,PolicySeverity=0,PolicyIClaim=0,PolicyPremium=0)
+#Policy Level Freq
+data_3states$PolicyFreq<-data_3states$FreqBC+data_3states$FreqIM+data_3states$FreqCar
+#Policy Level Claim Size
+data_3states$PolicyClaim<-data_3states$ClaimBC+data_3states$ClaimIM+data_3states$ClaimCar
+#Policy Level Severity ($1000)
+data_3states$PolicySeverity<-ifelse(data_3states$PolicyClaim==0,0,data_3states$PolicyClaim/data_3states$PolicyFreq/1000)
+#Policy Level Claim Occurrence
+data_3states$PolicyIClaim<-ifelse(data_3states$IClaimBC==0 & data_3states$IClaimIM==0 & data_3states$IClaimCar==0,0,1)
+#Policy Level Premium 
+data_3states$PolicyPremium <-data_3states$PremiumBC+data_3states$PremiumIM+data_3states$PremiumCar
+
+#logCoverage
+data_3states<-mutate(data_3states,logCoverageBC=0,logCoverageIM=0,logCoverageCar=0)
+data_3states$logCoverageBC<- ifelse(data_3states$CoverageBC==0,-999999,log(data_3states$CoverageBC))
+data_3states$logCoverageIM<- ifelse(data_3states$CoverageIM==0,-999999,log(data_3states$CoverageIM))
+data_3states$logCoverageCar<-ifelse(data_3states$CoverageCar==0,-999999,log(data_3states$CoverageCar))
+
+#coverage divided by 100, original unit is million. So now the unit is hundred million.
+data_3states<-mutate(data_3states,CoverageBC_100=CoverageBC/100,CoverageIM_100=CoverageIM/100,CoverageCar_100=CoverageCar/100,TotalCoverage=(CoverageBC+CoverageIM+CoverageCar)/100)
+
+
+#Now we are going to define second-order Markov state variable
+#Working on the second-order states
+data0612_Order2<-data_3states #copy data set
+# To define 2-order states, we need define the last state first
+data0612_Order2<-mutate(data0612_Order2,laststate=0,order2comb=0)
+
+for (i in c(2:(length(data0612_Order2$PolicyNum)))){
+data0612_Order2[i, c("laststate")] <- ifelse(data0612_Order2[i, c("PolicyNum")] == data0612_Order2[i-1, c("PolicyNum")] & data0612_Order2[i, c("Year")] == data0612_Order2[i-1, c("Year")]+1, as.numeric(data0612_Order2[i-1, c("statefrom")]), 
+                                            ifelse(data0612_Order2[i, c("PolicyNum")] != data0612_Order2[i-1, c("PolicyNum")],0, 
+                                            ifelse(data0612_Order2[i, c("PolicyNum")] == data0612_Order2[i-1, c("PolicyNum")] & data0612_Order2[i, c("Year")] != data0612_Order2[i-1, c("Year")]+1,0,NA)))
+}
+# if laststate==0, then this year is the first year
+
+#Then, using the last state and current state, we can define 2-order states
+data0612_Order2$order2comb<-ifelse(data0612_Order2$laststate==0 & data0612_Order2$statefrom==1, 1,                      #(0,1) -> 1 (new customer)
+                                ifelse(data0612_Order2$laststate==1 & data0612_Order2$statefrom==1,2,                   #(1,1) -> 2
+                                    ifelse(data0612_Order2$laststate==2 & data0612_Order2$statefrom==1,3,               #(2,1) -> 3
+                            ifelse(data0612_Order2$laststate==0 & data0612_Order2$statefrom==2,4,                       #(0,2) -> 4 (new customer)
+                                  ifelse(data0612_Order2$laststate==1 & data0612_Order2$statefrom==2,5,                   #(1,2) -> 5
+                                    ifelse(data0612_Order2$laststate==2 & data0612_Order2$statefrom==2,6,0))))))        #(2,2) -> 6
+
+summary(as.factor(data0612_Order2$order2comb)) #ignoring new customers, 3 and 5 are minority
+
+# dummy variables for the second order states
+data0612_Order2<-mutate(data0612_Order2, orderstate_1=0,orderstate_2=0,orderstate_3=0,orderstate_4=0,orderstate_5=0,orderstate_6=0)
+data0612_Order2$orderstate_1<-ifelse(data0612_Order2$order2comb==1,1,0)       #(0,1) is State 1, new customer
+data0612_Order2$orderstate_2<-ifelse(data0612_Order2$order2comb==2,1,0)       #(1,1) is State 2
+data0612_Order2$orderstate_3<-ifelse(data0612_Order2$order2comb==3,1,0)       #(2,1) is State 3, few obs
+data0612_Order2$orderstate_4<-ifelse(data0612_Order2$order2comb==4,1,0)       #(0,2) is State 4, new customer
+data0612_Order2$orderstate_5<-ifelse(data0612_Order2$order2comb==5,1,0)       #(1,2) is State 5, few obs
+data0612_Order2$orderstate_6<-ifelse(data0612_Order2$order2comb==6,1,0)       #(2,2) is State 6
+
+# dummy variables for: states of destination
+data0612_Order2<-mutate(data0612_Order2, tostate_1=0,tostate_2=0,tostate_3=0)
+data0612_Order2$tostate_1<-ifelse(data0612_Order2$stateto==1,1,0) 
+data0612_Order2$tostate_2<-ifelse(data0612_Order2$stateto==2,1,0) 
+data0612_Order2$tostate_3<-ifelse(data0612_Order2$stateto==3,1,0)
+
+#save(data0612_Order2,file="dataAugust2022.RData")
+```
