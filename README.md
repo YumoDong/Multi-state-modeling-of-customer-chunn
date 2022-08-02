@@ -20,8 +20,10 @@ The plots/tables were produced under the following software
 
 Guidlines for Reproduction
 =========================
-In "Paper Reproducation.rmd".
+1. In "Paper Reproducation.rmd", there are several sections divided by #, which follow the order of the paper. There is normally one theme in each section, where there are many chunks that subdivide different differernt tasks. We have made lots of comments to the codes though there is no code being difficult to understand. 
 
-#################################################################
+2. Because tuning hyparameters for GBMs and SVMs is time-consuming, so we saved the tuned models: gbm_caret_ori2022.RData, gbm_caret_bal2022.RData, svm_caret_ori2022.RData and svm_caret_ori2022.RData. They represent the tuned GBM in original training set, GBM in balanced training set, tuned SVM in original training set and SVM in balanced training set. We also provide the code of  parallel computing to speed up the tuning process. 
 
+3. The random seed was set to be 2022. Changing the seed may lead to different parameters for machine learning models and a different balanced (oversampling )training set.
 
+4. Feel free to contact us if you have any question by email: yumo.dong@anu.edu.au.
